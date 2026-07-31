@@ -3,15 +3,8 @@ import { expect, test } from "@playwright/test";
 test("основной сценарий встречи и быстрый новый запрос работают", async ({ page }, testInfo) => {
   const room = `main-${testInfo.project.name}-${Date.now()}`;
   await page.goto(`/?test-room=${room}`);
-  await expect(page.getByRole("heading", { name: /Понять запрос/ })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByRole("heading", { name: /Не потерять/ })).toBeVisible({ timeout: 8_000 });
   await expect(page.getByText("Цитаты — дословные")).toBeVisible();
-
-  const sharedRequest = page.locator('[data-shared-field="request:ask"]');
-  await sharedRequest.fill("Как сохранить командность при росте влияния?");
-  await sharedRequest.blur();
-  await page.getByRole("button", { name: /Во время/ }).click();
-  await expect(page.getByText("Как сохранить командность при росте влияния?")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Маршрут разговора" })).toBeVisible();
 
   const firstQuestion = page.locator(".question").first();
   await firstQuestion.locator(".check").click();
@@ -50,7 +43,7 @@ test("мобильная кнопка нового запроса закрепл
 
 test("вводная и источники открываются", async ({ page }, testInfo) => {
   await page.goto(`/?test-room=dialog-${testInfo.project.name}-${Date.now()}`);
-  await page.getByRole("button", { name: /Вводная о команде на 60 секунд/ }).click();
+  await page.getByRole("button", { name: /Вводная на 60 секунд/ }).click();
   await expect(page.getByRole("heading", { name: "Вводная на 60 секунд" })).toBeVisible();
   await page.getByRole("button", { name: "Закрыть" }).click();
 
@@ -72,17 +65,6 @@ test("два изолированных посетителя видят отме
     ]);
     await expect(first.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
     await expect(second.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
-    // Both clean clients may seed the same empty test room. Let those initial
-    // updates converge before testing a deliberate shared edit.
-    await first.waitForTimeout(1_500);
-
-    const sharedRequest = first.locator('[data-shared-field="request:ask"]');
-    await sharedRequest.fill("Как сохранить команду при росте?");
-    await sharedRequest.blur();
-    await expect(second.locator('[data-shared-field="request:ask"]')).toHaveValue(
-      "Как сохранить команду при росте?",
-      { timeout: 8_000 },
-    );
 
     await first.locator(".question").first().locator(".check").click();
     await expect(second.locator(".question").first()).toHaveClass(/checked/, { timeout: 8_000 });
