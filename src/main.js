@@ -46,6 +46,26 @@ const app = document.querySelector("#app");
 let activeSection = sections[0].id;
 let filter = "all";
 let showAllQuotes = false;
+let activePhase = "before";
+
+const requestFields = [
+  ["request:state", "Что происходит сейчас?", "Только наблюдаемые факты и 1–2 конкретных эпизода."],
+  ["request:change", "Что мы хотим изменить?", "Не «стать лучше», а какое поведение или решение должно стать другим."],
+  ["request:importance", "Почему это важно именно сейчас?", "Что произойдёт с людьми или командой, если ничего не менять."],
+  ["request:tried", "Что уже пробовали?", "Что помогло, что не помогло и где вы застряли."],
+  ["request:ask", "Один запрос к Альберту", "Одна формулировка, которую можно прочитать вслух без пояснений."],
+  ["request:success", "С чем хотим уйти?", "Как поймём к концу встречи, что разговор был полезен."],
+];
+
+const agendaSteps = [
+  ["context", "Коротко представить команду и контекст"],
+  ["request", "Прочитать общий запрос без дополнительных версий"],
+  ["examples", "Дать Альберту 1–2 реальных эпизода"],
+  ["clarify", "Ответить на уточняющие вопросы и не защищать исходную формулировку"],
+  ["questions", "Пройти только по подходящим вопросам из банка ниже"],
+  ["repeat", "Повторить услышанное своими словами и проверить понимание"],
+  ["commit", "Выбрать 1–2 практики, ответственных и дату разбора"],
+];
 
 function escapeHtml(value = "") {
   return String(value)
@@ -219,6 +239,139 @@ function progress() {
   };
 }
 
+function sharedValue(key) {
+  return meta.get(key) || "";
+}
+
+function sharedField([key, label, hint], compact = false) {
+  return `
+    <label class="shared-field ${compact ? "shared-field-compact" : ""}">
+      <span>${label}</span>
+      <small>${hint}</small>
+      <textarea data-shared-field="${key}" placeholder="Напишите вместе…">${escapeHtml(sharedValue(key))}</textarea>
+    </label>
+  `;
+}
+
+function requestReadiness() {
+  const filled = requestFields.filter(([key]) => String(sharedValue(key)).trim()).length;
+  return { filled, total: requestFields.length };
+}
+
+function renderJourney() {
+  const readiness = requestReadiness();
+  const focusSection = sharedValue("request:focus") || activeSection;
+  const selectedTopic = sections.find((section) => section.id === focusSection) || sections[0];
+  const agendaDone = agendaSteps.filter(([id]) => meta.get(`agenda:${id}`)).length;
+
+  const phaseContent = {
+    before: `
+      <div class="journey-intro">
+        <div>
+          <div class="eyebrow">До выступления Альберта · готовят руководители команды</div>
+          <h2>Сначала понять, с чем именно мы идём</h2>
+          <p>Заполняйте своими словами. Сайт не формулирует позицию команды за вас — цитаты и темы ниже только помогают вспомнить разговор.</p>
+        </div>
+        <div class="readiness"><strong>${readiness.filled}/${readiness.total}</strong><span>частей запроса заполнено</span></div>
+      </div>
+      <div class="focus-picker">
+        <label>
+          <span>Главная тема общего запроса</span>
+          <select data-focus-section>
+            ${sections
+              .map(
+                (section) =>
+                  `<option value="${section.id}" ${section.id === focusSection ? "selected" : ""}>${section.short} — ${section.title}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <p>Выбрано: <strong>${selectedTopic.title}</strong>. Остальные темы не пропадают — они остаются банком уточняющих вопросов.</p>
+      </div>
+      <div class="request-builder">${requestFields.map((field) => sharedField(field)).join("")}</div>
+      <button class="button button-accent phase-next" data-phase="during">Перейти к ведению встречи →</button>
+    `,
+    during: `
+      <div class="journey-intro">
+        <div>
+          <div class="eyebrow">Во время выступления · около 30 участников</div>
+          <h2>Держать общий запрос в фокусе</h2>
+          <p>Не нужно задать всё. Идите по порядку, отмечайте пройденное и сохраняйте формулировки Альберта рядом с вопросами.</p>
+        </div>
+        <div class="readiness"><strong>${agendaDone}/${agendaSteps.length}</strong><span>шагов встречи пройдено</span></div>
+      </div>
+      <div class="live-request">
+        <div class="eyebrow">Запрос, который читаем вслух</div>
+        ${
+          sharedValue("request:ask")
+            ? `<blockquote>«${escapeHtml(sharedValue("request:ask"))}»</blockquote>`
+            : `<p class="request-missing">Общий запрос ещё не сформулирован. Вернитесь в «До встречи» и запишите его своими словами.</p>`
+        }
+        <button class="text-button" data-phase="before">Уточнить запрос</button>
+      </div>
+      <div class="meeting-agenda">
+        <h3>Маршрут разговора</h3>
+        ${agendaSteps
+          .map(
+            ([id, label], index) => `
+              <label class="agenda-step ${meta.get(`agenda:${id}`) ? "done" : ""}">
+                <input type="checkbox" data-agenda="${id}" ${meta.get(`agenda:${id}`) ? "checked" : ""}>
+                <span>${index + 1}</span><strong>${label}</strong>
+              </label>
+            `,
+          )
+          .join("")}
+      </div>
+      <div class="live-capture">
+        ${sharedField(["meeting:heard", "Что мы услышали", "Ключевые различия и формулировки Альберта."], true)}
+        ${sharedField(["meeting:practices", "Какие практики предложены", "Конкретное действие, частота и длительность."], true)}
+        ${sharedField(["meeting:open", "Что осталось неясным", "Что нужно уточнить до завершения встречи."], true)}
+      </div>
+      <button class="button button-accent phase-next" data-phase="after">Перейти к договорённостям →</button>
+    `,
+    after: `
+      <div class="journey-intro">
+        <div>
+          <div class="eyebrow">Последние 10 минут и после встречи</div>
+          <h2>Превратить разговор в проверяемое действие</h2>
+          <p>Не уносите десять обещаний. Выберите максимум одну личную и одну командную практику на 30 дней.</p>
+        </div>
+      </div>
+      <div class="request-builder outcome-builder">
+        ${sharedField(["outcome:personal", "Одна личная практика", "Кто делает, в какой ситуации и как часто."])}
+        ${sharedField(["outcome:team", "Одна командная практика", "Что делает команда и кто поддерживает ритм."])}
+        ${sharedField(["outcome:owner", "Ответственные", "Имена людей, которые напомнят и соберут наблюдения."])}
+        ${sharedField(["outcome:review", "Дата разбора", "Когда через 30 дней решите: оставить, изменить или прекратить."])}
+      </div>
+      <div class="final-actions">
+        <button class="button button-dark" data-action="export">Скачать общий итог</button>
+        <button class="text-button" data-phase="during">Вернуться к заметкам встречи</button>
+      </div>
+    `,
+  };
+
+  return `
+    <section class="journey">
+      <nav class="phase-switcher" aria-label="Этап работы">
+        ${[
+          ["before", "1", "До встречи"],
+          ["during", "2", "Во время"],
+          ["after", "3", "После"],
+        ]
+          .map(
+            ([id, number, label]) => `
+              <button class="${activePhase === id ? "active" : ""}" data-phase="${id}">
+                <span>${number}</span><strong>${label}</strong>
+              </button>
+            `,
+          )
+          .join("")}
+      </nav>
+      <div class="journey-body">${phaseContent[activePhase]}</div>
+    </section>
+  `;
+}
+
 function render() {
   if (!initialized) {
     app.innerHTML = `<div class="loading-screen"><span></span><p>Подключаем общую доску…</p></div>`;
@@ -250,10 +403,10 @@ function render() {
     <main id="top">
       <section class="hero hero-compact">
         <div class="hero-copy">
-          <div class="hero-kicker">Общая шпаргалка к встрече с Альбертом Сафиным</div>
-          <h1>Не потерять<br><em>главное.</em></h1>
+          <div class="hero-kicker">Подготовка общего коучингового запроса к Альберту Сафину</div>
+          <h1>Понять запрос.<br><em>Провести встречу.</em></h1>
           <p class="hero-lead">
-            Цитаты — дословные. Пересказы — помечены. Все отметки и заметки видны команде.
+            Рабочая доска руководителей команды: подготовиться заранее, идти по плану во время выступления и договориться о действиях после.
           </p>
         </div>
         <div class="hero-tools">
@@ -262,14 +415,16 @@ function render() {
             <div class="progress-track"><span style="width:${stats.percent}%"></span></div>
           </div>
           <button class="brief-card brief-compact" data-action="brief">
-            <span>Начать встречу</span>
-            <strong>Вводная на 60 секунд →</strong>
+            <span>Когда дадут слово</span>
+            <strong>Вводная о команде на 60 секунд →</strong>
           </button>
         </div>
       </section>
 
+      ${renderJourney()}
+
       <section class="topic-bar" aria-label="Темы встречи">
-        <div class="topic-label">1. Выберите тему</div>
+        <div class="topic-label">Банк тем и уточняющих вопросов</div>
         <div class="topic-tabs">
           ${sections
             .map((section) => {
@@ -289,7 +444,7 @@ function render() {
 
       <section class="workspace workspace-simple">
         <aside class="rail rail-simple">
-          <div class="rail-label">2. Какие вопросы показать</div>
+          <div class="rail-label">Какие вопросы показать</div>
           <div class="filters filters-vertical" role="group" aria-label="Какие вопросы показать">
             ${[
               ["all", "Все вопросы"],
@@ -313,9 +468,10 @@ function render() {
           <div class="section-head">
             <span>${current.number}</span>
             <div>
-              <div class="eyebrow">Тема встречи</div>
+              <div class="eyebrow">Материал для подготовки и разговора</div>
               <h2>${current.title}</h2>
               <p>${current.summary}</p>
+              <div class="evidence-note">Цитаты — дословные из вашей встречи. Пересказы явно помечены.</div>
             </div>
           </div>
 
@@ -460,6 +616,23 @@ function updateItem(id, patch) {
 }
 
 function bindEvents() {
+  document.querySelectorAll("[data-phase]").forEach((button) => {
+    button.addEventListener("click", () => {
+      activePhase = button.dataset.phase;
+      render();
+      document.querySelector(".journey")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  document.querySelector("[data-focus-section]")?.addEventListener("change", (event) => {
+    activeSection = event.target.value;
+    meta.set("request:focus", activeSection);
+  });
+  document.querySelectorAll("[data-shared-field]").forEach((field) => {
+    field.addEventListener("change", () => meta.set(field.dataset.sharedField, field.value.trim()));
+  });
+  document.querySelectorAll("[data-agenda]").forEach((input) => {
+    input.addEventListener("change", () => meta.set(`agenda:${input.dataset.agenda}`, input.checked));
+  });
   document.querySelectorAll("[data-section]").forEach((button) => {
     button.addEventListener("click", () => {
       activeSection = button.dataset.section;
@@ -524,7 +697,9 @@ function bindEvents() {
   document.querySelector('[data-action="sources"]')?.addEventListener("click", showSources);
   document.querySelector('[data-action="share"]')?.addEventListener("click", share);
   document.querySelector('[data-action="identity"]')?.addEventListener("click", showIdentity);
-  document.querySelector('[data-action="export"]')?.addEventListener("click", exportState);
+  document.querySelectorAll('[data-action="export"]').forEach((button) => {
+    button.addEventListener("click", exportState);
+  });
   document.querySelector('[data-action="import"]')?.addEventListener("change", importState);
   document.querySelector('[data-action="close"]')?.addEventListener("click", closeDialog);
 }
@@ -719,7 +894,10 @@ notes.observe(() => {
   persist();
   render();
 });
-meta.observe(() => persist());
+meta.observe(() => {
+  persist();
+  render();
+});
 doc.on("update", (update, origin) => {
   if (origin !== "mqtt") publishState(update);
 });
