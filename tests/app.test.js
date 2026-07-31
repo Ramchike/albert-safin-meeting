@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { openingScript, sections, sources } from "../src/content.js";
+import { keyRequests, openingScript, sections, sources } from "../src/content.js";
 
 describe("содержание шпаргалки", () => {
   it("у каждого вопроса есть уникальный идентификатор и основание", () => {
@@ -17,6 +17,7 @@ describe("содержание шпаргалки", () => {
 
   it("есть готовая вводная и проверяемые источники", () => {
     expect(openingScript.length).toBeGreaterThanOrEqual(4);
+    expect(keyRequests).toHaveLength(4);
     expect(sources.every((source) => source.url.startsWith("https://"))).toBe(true);
   });
 });

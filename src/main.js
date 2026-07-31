@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import mqtt from "mqtt";
-import { openingScript, sections, sources } from "./content.js";
+import { keyRequests, openingScript, sections, sources } from "./content.js";
 import "./style.css";
 
 const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -250,10 +250,11 @@ function render() {
     <main id="top">
       <section class="hero hero-compact">
         <div class="hero-copy">
-          <div class="hero-kicker">Общая шпаргалка к встрече с Альбертом Сафиным</div>
-          <h1>Не потерять<br><em>главное.</em></h1>
+          <div class="hero-kicker">Одна рабочая страница на всё выступление · около 30 участников</div>
+          <h1>Встреча с<br><em>Альбертом Сафиным.</em></h1>
           <p class="hero-lead">
-            Цитаты — дословные. Пересказы — помечены. Все отметки и заметки видны команде.
+            Начните с четырёх главных запросов, затем открывайте уточнения по темам. Отметки и заметки сразу видны вашей команде.
+            Цитаты — дословные, пересказы помечены.
           </p>
         </div>
         <div class="hero-tools">
@@ -268,8 +269,22 @@ function render() {
         </div>
       </section>
 
+      <section class="meeting-now">
+        <div class="meeting-now-head">
+          <div>
+            <div class="eyebrow">С этого начинаем, когда нам дадут слово</div>
+            <h2>Четыре главных запроса</h2>
+          </div>
+          <button class="button button-dark" data-action="brief">Открыть вводную о команде</button>
+        </div>
+        <ol class="key-requests">
+          ${keyRequests.map((request) => `<li><span></span><p>${escapeHtml(request)}</p></li>`).join("")}
+        </ol>
+        <p class="meeting-now-hint">Не обязательно успеть всё. Если Альберт углубится в один запрос и даст применимую практику — это уже полезный результат.</p>
+      </section>
+
       <section class="topic-bar" aria-label="Темы встречи">
-        <div class="topic-label">1. Выберите тему</div>
+        <div class="topic-label">Все запросы из расшифровки</div>
         <div class="topic-tabs">
           ${sections
             .map((section) => {
@@ -289,7 +304,7 @@ function render() {
 
       <section class="workspace workspace-simple">
         <aside class="rail rail-simple">
-          <div class="rail-label">2. Какие вопросы показать</div>
+          <div class="rail-label">Какие вопросы показать</div>
           <div class="filters filters-vertical" role="group" aria-label="Какие вопросы показать">
             ${[
               ["all", "Все вопросы"],
@@ -520,7 +535,9 @@ function bindEvents() {
     render();
   });
   document.querySelector('[data-action="new-request"]')?.addEventListener("click", showNewRequest);
-  document.querySelector('[data-action="brief"]')?.addEventListener("click", showBrief);
+  document.querySelectorAll('[data-action="brief"]').forEach((button) => {
+    button.addEventListener("click", showBrief);
+  });
   document.querySelector('[data-action="sources"]')?.addEventListener("click", showSources);
   document.querySelector('[data-action="share"]')?.addEventListener("click", share);
   document.querySelector('[data-action="identity"]')?.addEventListener("click", showIdentity);

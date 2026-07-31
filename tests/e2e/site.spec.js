@@ -3,7 +3,10 @@ import { expect, test } from "@playwright/test";
 test("основной сценарий встречи и быстрый новый запрос работают", async ({ page }, testInfo) => {
   const room = `main-${testInfo.project.name}-${Date.now()}`;
   await page.goto(`/?test-room=${room}`);
-  await expect(page.getByRole("heading", { name: /Не потерять/ })).toBeVisible({ timeout: 8_000 });
+  await expect(page.getByRole("heading", { name: /Встреча с Альбертом Сафиным/ })).toBeVisible({
+    timeout: 8_000,
+  });
+  await expect(page.getByRole("heading", { name: "Четыре главных запроса" })).toBeVisible();
   await expect(page.getByText("Цитаты — дословные")).toBeVisible();
 
   const firstQuestion = page.locator(".question").first();
@@ -65,6 +68,7 @@ test("два изолированных посетителя видят отме
     ]);
     await expect(first.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
     await expect(second.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
+    await first.waitForTimeout(1_500);
 
     await first.locator(".question").first().locator(".check").click();
     await expect(second.locator(".question").first()).toHaveClass(/checked/, { timeout: 8_000 });
