@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import mqtt from "mqtt";
-import { keyRequests, openingScript, sections, sources } from "./content.js";
+import { openingScript, sections, sources } from "./content.js";
 import "./style.css";
 
 const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
@@ -45,7 +45,6 @@ const defaults = sections.flatMap((section) =>
 const app = document.querySelector("#app");
 let activeSection = sections[0].id;
 let filter = "all";
-let showAllQuotes = false;
 
 function escapeHtml(value = "") {
   return String(value)
@@ -75,7 +74,10 @@ function localState() {
 }
 
 function seedIfEmpty() {
-  if (initialized) return;
+  if (initialized) {
+    migrateContent();
+    return;
+  }
   initialized = true;
   const saved = localState();
   doc.transact(() => {
@@ -95,7 +97,44 @@ function seedIfEmpty() {
       if (!meta.has(key)) meta.set(key, value);
     });
   });
+  migrateContent();
   render();
+}
+
+function migrateContent() {
+  const legacySections = {
+    team: "certainty",
+    conflict: "certainty",
+    result: "certainty",
+    scale: "uncertainty",
+  };
+
+  doc.transact(() => {
+    defaults.forEach((next) => {
+      const current = items.get(next.id);
+      if (!current) {
+        items.set(next.id, next);
+        return;
+      }
+      if (
+        current.sectionId !== next.sectionId ||
+        current.text !== next.text ||
+        current.why !== next.why
+      ) {
+        items.set(next.id, {
+          ...current,
+          sectionId: next.sectionId,
+          text: next.text,
+          why: next.why,
+        });
+      }
+    });
+
+    items.forEach((item, id) => {
+      if (!item.custom || !legacySections[item.sectionId]) return;
+      items.set(id, { ...item, sectionId: legacySections[item.sectionId] });
+    });
+  }, "content-migration");
 }
 
 function persist() {
@@ -225,14 +264,14 @@ function render() {
     return;
   }
 
-  const current = sections.find((section) => section.id === activeSection) || sections[0];
   const allItems = itemList();
-  const currentItems = allItems.filter(
-    (item) =>
-      item.sectionId === current.id &&
-      (filter === "all" || (filter === "open" ? !item.checked : item.checked)),
-  );
   const stats = progress();
+  const visibleItems = (sectionId) =>
+    allItems.filter(
+      (item) =>
+        item.sectionId === sectionId &&
+        (filter === "all" || (filter === "open" ? !item.checked : item.checked)),
+    );
 
   app.innerHTML = `
     <header class="topbar">
@@ -248,125 +287,76 @@ function render() {
     </header>
 
     <main id="top">
-      <section class="hero hero-compact">
-        <div class="hero-copy">
-          <div class="hero-kicker">Одна рабочая страница на всё выступление · около 30 участников</div>
-          <h1>Встреча с<br><em>Альбертом Сафиным.</em></h1>
-          <p class="hero-lead">
-            Начните с четырёх главных запросов, затем открывайте уточнения по темам. Отметки и заметки сразу видны вашей команде.
-            Цитаты — дословные, пересказы помечены.
-          </p>
+      <section class="meeting-header">
+        <div>
+          <div class="hero-kicker">Шпаргалка на встречу · около 30 участников</div>
+          <h1>Встреча с Альбертом Сафиным</h1>
+          <p>Все вопросы сразу: что можем изменить сами и что остаётся неопределённым.</p>
         </div>
-        <div class="hero-tools">
-          <div class="progress-card progress-compact">
-            <div class="progress-label"><span>Обсудили</span><strong>${stats.done}/${stats.total}</strong></div>
-            <div class="progress-track"><span style="width:${stats.percent}%"></span></div>
+        <div class="meeting-header-actions">
+          <div class="mini-progress">
+            <span>Обсудили</span><strong>${stats.done}/${stats.total}</strong>
+            <i><b style="width:${stats.percent}%"></b></i>
           </div>
-          <button class="brief-card brief-compact" data-action="brief">
-            <span>Начать встречу</span>
-            <strong>Вводная на 60 секунд →</strong>
-          </button>
+          <button class="button button-accent" data-action="brief">Вводная</button>
         </div>
       </section>
 
-      <section class="meeting-now">
-        <div class="meeting-now-head">
-          <div>
-            <div class="eyebrow">С этого начинаем, когда нам дадут слово</div>
-            <h2>Четыре главных запроса</h2>
-          </div>
-          <button class="button button-dark" data-action="brief">Открыть вводную о команде</button>
-        </div>
-        <ol class="key-requests">
-          ${keyRequests.map((request) => `<li><span></span><p>${escapeHtml(request)}</p></li>`).join("")}
-        </ol>
-        <p class="meeting-now-hint">Не обязательно успеть всё. Если Альберт углубится в один запрос и даст применимую практику — это уже полезный результат.</p>
-      </section>
-
-      <section class="topic-bar" aria-label="Темы встречи">
-        <div class="topic-label">Все запросы из расшифровки</div>
-        <div class="topic-tabs">
-          ${sections
-            .map((section) => {
-              const sectionItems = allItems.filter((item) => item.sectionId === section.id);
-              const done = sectionItems.filter((item) => item.checked).length;
-              return `
-                <button class="topic-tab ${section.id === current.id ? "active" : ""}" data-section="${section.id}">
-                  <span>${section.number}</span>
-                  <strong>${section.short}</strong>
-                  <small>${done}/${sectionItems.length}</small>
-                </button>
-              `;
-            })
+      <section class="board-controls">
+        <div class="filters filters-inline" role="group" aria-label="Какие вопросы показать">
+          ${[
+            ["all", "Все"],
+            ["open", "Не обсудили"],
+            ["done", "Обсудили"],
+          ]
+            .map(
+              ([value, label]) =>
+                `<button class="${filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`,
+            )
             .join("")}
         </div>
+        <div class="board-actions">
+          <button data-action="export">Скачать итог</button>
+          <button data-action="sources">Источники</button>
+        </div>
       </section>
 
-      <section class="workspace workspace-simple">
-        <aside class="rail rail-simple">
-          <div class="rail-label">Какие вопросы показать</div>
-          <div class="filters filters-vertical" role="group" aria-label="Какие вопросы показать">
-            ${[
-              ["all", "Все вопросы"],
-              ["open", "Осталось обсудить"],
-              ["done", "Уже обсудили"],
-            ]
-              .map(
-                ([value, label]) =>
-                  `<button class="${filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`,
-              )
-              .join("")}
-          </div>
-          <div class="rail-actions">
-            <button data-action="export">Скачать итог</button>
-            <label class="import-label">Загрузить итог<input type="file" accept="application/json" data-action="import"></label>
-            <button data-action="sources">Источники</button>
-          </div>
-        </aside>
-
-        <section class="content">
-          <div class="section-head">
-            <span>${current.number}</span>
-            <div>
-              <div class="eyebrow">Тема встречи</div>
-              <h2>${current.title}</h2>
-              <p>${current.summary}</p>
-            </div>
-          </div>
-
-          <div class="quote-strip">
-            ${current.quotes
-              .slice(0, showAllQuotes ? current.quotes.length : 1)
-              .map(
-                (quote) => `
-                  <blockquote>
-                    <p>«${quote.text}»</p>
-                    <footer>${quote.author} · ${quote.time}</footer>
-                  </blockquote>
-                `,
-              )
-              .join("")}
-            <button data-action="quotes">${showAllQuotes ? "Свернуть цитаты" : `Показать ещё ${current.quotes.length - 1}`}</button>
-          </div>
-
-          <div class="questions-toolbar">
-            <h3>${filter === "all" ? "Все вопросы" : filter === "open" ? "Осталось обсудить" : "Уже обсудили"}</h3>
-            <span>${currentItems.length} шт.</span>
-          </div>
-
-          <div class="question-list">
-            ${
-              currentItems.length
-                ? currentItems.map(renderQuestion).join("")
-                : `<div class="empty">Здесь пока ничего нет.</div>`
-            }
-          </div>
-
-          <div class="session-notes">
-            <label for="session-notes">Общий вывод по теме</label>
-            <textarea id="session-notes" placeholder="Что команда решила сделать после встречи…">${escapeHtml(meta.get(`notes:${current.id}`) || "")}</textarea>
-          </div>
-        </section>
+      <section class="zones-grid">
+        ${sections
+          .map((section) => {
+            const sectionItems = allItems.filter((item) => item.sectionId === section.id);
+            const shown = visibleItems(section.id);
+            const done = sectionItems.filter((item) => item.checked).length;
+            const quote = section.quotes[0];
+            return `
+              <section class="zone zone-${section.id}">
+                <header class="zone-head">
+                  <div>
+                    <span>${section.number}</span>
+                    <h2>${section.title}</h2>
+                    <p>${section.summary}</p>
+                  </div>
+                  <strong>${done}/${sectionItems.length}</strong>
+                </header>
+                <details class="zone-quote">
+                  <summary>Цитата из записи</summary>
+                  <blockquote>«${escapeHtml(quote.text)}» <small>${quote.author} · ${quote.time}</small></blockquote>
+                </details>
+                <div class="compact-question-list">
+                  ${
+                    shown.length
+                      ? shown.map(renderQuestion).join("")
+                      : `<div class="empty">В этой зоне ничего не найдено.</div>`
+                  }
+                </div>
+                <label class="zone-summary">
+                  <span>Общий вывод</span>
+                  <textarea data-zone-notes="${section.id}" placeholder="Коротко…">${escapeHtml(meta.get(`notes:${section.id}`) || "")}</textarea>
+                </label>
+              </section>
+            `;
+          })
+          .join("")}
       </section>
     </main>
 
@@ -394,18 +384,16 @@ function render() {
 function renderQuestion(item) {
   const itemNotes = noteList(item.id);
   return `
-    <article class="question ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
+    <article class="question question-compact ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
       <label class="check">
         <input type="checkbox" ${item.checked ? "checked" : ""} data-check="${escapeHtml(item.id)}">
         <span></span>
       </label>
       <div class="question-body">
-        <div class="question-meta">${item.custom ? `Запрос от ${escapeHtml(item.createdByName || "команды")}` : "Вопрос к Альберту"}</div>
+        ${item.custom ? `<div class="question-meta">Добавил ${escapeHtml(item.createdByName || "участник")}</div>` : ""}
         <h4>${escapeHtml(item.text)}</h4>
-        ${item.why ? `<p><strong>Зачем:</strong> ${escapeHtml(item.why)}</p>` : ""}
-        ${item.checkedBy ? `<div class="checked-by">Отметил: ${escapeHtml(item.checkedBy)}</div>` : ""}
-
-        <div class="team-notes">
+        <details class="team-notes team-notes-collapsed" ${itemNotes.length ? "open" : ""}>
+          <summary>${itemNotes.length ? `${itemNotes.length} заметок` : "Добавить заметку"}</summary>
           ${
             itemNotes.length
               ? itemNotes
@@ -423,13 +411,13 @@ function renderQuestion(item) {
                     `,
                   )
                   .join("")
-              : `<span class="no-notes">Пока нет заметок команды</span>`
+              : ""
           }
           <form class="note-form" data-note-form="${escapeHtml(item.id)}">
-            <input name="note" maxlength="500" placeholder="Добавить заметку от ${escapeHtml(participant.name)}…" required>
+            <input name="note" maxlength="500" placeholder="Заметка от ${escapeHtml(participant.name)}…" required>
             <button aria-label="Отправить заметку">↑</button>
           </form>
-        </div>
+        </details>
       </div>
       ${
         item.custom && item.createdBy === participant.id
@@ -475,14 +463,6 @@ function updateItem(id, patch) {
 }
 
 function bindEvents() {
-  document.querySelectorAll("[data-section]").forEach((button) => {
-    button.addEventListener("click", () => {
-      activeSection = button.dataset.section;
-      showAllQuotes = false;
-      render();
-      document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
   document.querySelectorAll("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       filter = button.dataset.filter;
@@ -527,12 +507,10 @@ function bindEvents() {
       });
     });
   });
-  document.querySelector("#session-notes")?.addEventListener("change", (event) => {
-    meta.set(`notes:${activeSection}`, event.target.value);
-  });
-  document.querySelector('[data-action="quotes"]')?.addEventListener("click", () => {
-    showAllQuotes = !showAllQuotes;
-    render();
+  document.querySelectorAll("[data-zone-notes]").forEach((field) => {
+    field.addEventListener("change", () => {
+      meta.set(`notes:${field.dataset.zoneNotes}`, field.value);
+    });
   });
   document.querySelector('[data-action="new-request"]')?.addEventListener("click", showNewRequest);
   document.querySelectorAll('[data-action="brief"]').forEach((button) => {
@@ -736,7 +714,10 @@ notes.observe(() => {
   persist();
   render();
 });
-meta.observe(() => persist());
+meta.observe(() => {
+  persist();
+  render();
+});
 doc.on("update", (update, origin) => {
   if (origin !== "mqtt") publishState(update);
 });

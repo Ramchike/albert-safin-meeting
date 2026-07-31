@@ -6,15 +6,13 @@ test("основной сценарий встречи и быстрый нов�
   await expect(page.getByRole("heading", { name: /Встреча с Альбертом Сафиным/ })).toBeVisible({
     timeout: 8_000,
   });
-  await expect(page.getByRole("heading", { name: "Четыре главных запроса" })).toBeVisible();
-  await expect(page.getByText("Цитаты — дословные")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Зона определённости" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Зона неопределённости" })).toBeVisible();
+  await expect(page.locator(".question")).toHaveCount(31);
 
   const firstQuestion = page.locator(".question").first();
   await firstQuestion.locator(".check").click();
   await expect(firstQuestion).toHaveClass(/checked/);
-
-  await page.getByRole("button", { name: /Команда/ }).click();
-  await expect(page.getByRole("heading", { name: "Сохранить команду при росте" })).toBeVisible();
 
   const addButton = page.getByRole("button", { name: "Добавить новый запрос" });
   await expect(addButton).toBeVisible();
@@ -46,7 +44,7 @@ test("мобильная кнопка нового запроса закрепл
 
 test("вводная и источники открываются", async ({ page }, testInfo) => {
   await page.goto(`/?test-room=dialog-${testInfo.project.name}-${Date.now()}`);
-  await page.getByRole("button", { name: /Вводная на 60 секунд/ }).click();
+  await page.getByRole("button", { name: "Вводная", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Вводная на 60 секунд" })).toBeVisible();
   await page.getByRole("button", { name: "Закрыть" }).click();
 
@@ -73,6 +71,7 @@ test("два изолированных посетителя видят отме
     await first.locator(".question").first().locator(".check").click();
     await expect(second.locator(".question").first()).toHaveClass(/checked/, { timeout: 8_000 });
 
+    await first.locator(".question").first().locator(".team-notes summary").click();
     await first.locator(".note-form").first().getByRole("textbox").fill("Проверить через неделю");
     await first.locator(".note-form").first().getByRole("button").click();
     await expect(second.getByText("Проверить через неделю")).toBeVisible({ timeout: 8_000 });

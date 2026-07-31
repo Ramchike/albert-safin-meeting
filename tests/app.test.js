@@ -9,7 +9,7 @@ describe("содержание шпаргалки", () => {
   });
 
   it("цитаты отделены от пересказа и имеют автора и время", () => {
-    expect(sections.every((section) => section.summary.startsWith("Пересказ:"))).toBe(true);
+    expect(sections.map((section) => section.id)).toEqual(["certainty", "uncertainty"]);
     expect(
       sections.flatMap((section) => section.quotes).every((quote) => quote.text && quote.author && quote.time),
     ).toBe(true);

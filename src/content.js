@@ -1,4 +1,4 @@
-export const sections = [
+const topicSections = [
   {
     id: "uncertainty",
     number: "01",
@@ -288,6 +288,69 @@ export const sections = [
         why: "Это прямо названный приоритет команды, но пока без наблюдаемых правил принятия решений.",
       },
     ],
+  },
+];
+
+const questionsById = new Map(
+  topicSections.flatMap((section) => section.questions.map((question) => [question.id, question])),
+);
+
+function questions(ids) {
+  return ids.map((id) => questionsById.get(id)).filter(Boolean);
+}
+
+export const sections = [
+  {
+    id: "certainty",
+    number: "01",
+    title: "Зона определённости",
+    short: "Определённость",
+    summary: "Что мы можем изменить внутри команды своими решениями и практиками.",
+    quotes: [
+      {
+        text: "Хочется, чтобы мы в первую очередь были про людей, а результат — на втором месте.",
+        author: "Денис",
+        time: "26:13",
+      },
+    ],
+    questions: questions([
+      "u2",
+      "u3",
+      "u4",
+      "u7",
+      "t1",
+      "t2",
+      "t3",
+      "t4",
+      "t5",
+      "t6",
+      "t7",
+      "c1",
+      "c2",
+      "c3",
+      "c4",
+      "r1",
+      "r2",
+      "r3",
+      "r4",
+      "r5",
+      "r6",
+    ]),
+  },
+  {
+    id: "uncertainty",
+    number: "02",
+    title: "Зона неопределённости",
+    short: "Неопределённость",
+    summary: "Что мы не контролируем напрямую, но должны учитывать и проходить.",
+    quotes: [
+      {
+        text: "Как мне не расстраиваться и не входить в отчаяние, когда есть много ограничений?",
+        author: "Рамир",
+        time: "03:15",
+      },
+    ],
+    questions: questions(["u1", "u5", "u6", "s1", "s2", "s3", "s4", "s5", "s6", "s7"]),
   },
 ];
 
