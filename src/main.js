@@ -103,10 +103,12 @@ function seedIfEmpty() {
 
 function migrateContent() {
   const legacySections = {
-    team: "certainty",
-    conflict: "certainty",
-    result: "certainty",
-    scale: "uncertainty",
+    team: "program",
+    conflict: "program",
+    result: "program",
+    scale: "program",
+    certainty: "program",
+    uncertainty: "program",
   };
 
   doc.transact(() => {
@@ -249,7 +251,8 @@ function prunePeople() {
 }
 
 function progress() {
-  const all = itemList();
+  const validSections = new Set(sections.map((section) => section.id));
+  const all = itemList().filter((item) => validSections.has(item.sectionId));
   const done = all.filter((item) => item.checked).length;
   return {
     done,
@@ -289,36 +292,27 @@ function render() {
     <main id="top">
       <section class="meeting-header">
         <div>
-          <div class="hero-kicker">Шпаргалка на встречу · около 30 участников</div>
-          <h1>Встреча с Альбертом Сафиным</h1>
-          <p>Все вопросы сразу: что можем изменить сами и что остаётся неопределённым.</p>
+          <div class="hero-kicker">Бриф к программе · отправляем за две недели до выступления</div>
+          <h1>Запросы к программе Альберта Сафина</h1>
+          <p>Пять направлений, которые отправляем за две недели до выступления.</p>
         </div>
         <div class="meeting-header-actions">
           <div class="mini-progress">
-            <span>Обсудили</span><strong>${stats.done}/${stats.total}</strong>
+            <span>Согласовано</span><strong>${stats.done}/${stats.total}</strong>
             <i><b style="width:${stats.percent}%"></b></i>
           </div>
-          <button class="button button-accent" data-action="brief">Вводная</button>
         </div>
       </section>
 
-      <section class="board-controls">
-        <div class="filters filters-inline" role="group" aria-label="Какие вопросы показать">
-          ${[
-            ["all", "Все"],
-            ["open", "Не обсудили"],
-            ["done", "Обсудили"],
-          ]
-            .map(
-              ([value, label]) =>
-                `<button class="${filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`,
-            )
-            .join("")}
+      <section class="team-context">
+        <div class="team-context-head">
+          <div><span>Контекст для Альберта</span><h2>Коротко о команде</h2></div>
+          <div class="board-actions">
+            <button data-action="export">Скачать бриф</button>
+            <button data-action="sources">Источники</button>
+          </div>
         </div>
-        <div class="board-actions">
-          <button data-action="export">Скачать итог</button>
-          <button data-action="sources">Источники</button>
-        </div>
+        ${openingScript.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
       </section>
 
       <section class="zones-grid">
@@ -338,10 +332,6 @@ function render() {
                   </div>
                   <strong>${done}/${sectionItems.length}</strong>
                 </header>
-                <details class="zone-quote">
-                  <summary>Цитата из записи</summary>
-                  <blockquote>«${escapeHtml(quote.text)}» <small>${quote.author} · ${quote.time}</small></blockquote>
-                </details>
                 <div class="compact-question-list">
                   ${
                     shown.length
@@ -350,8 +340,8 @@ function render() {
                   }
                 </div>
                 <label class="zone-summary">
-                  <span>Общий вывод</span>
-                  <textarea data-zone-notes="${section.id}" placeholder="Коротко…">${escapeHtml(meta.get(`notes:${section.id}`) || "")}</textarea>
+                  <span>Комментарий к брифу</span>
+                  <textarea data-zone-notes="${section.id}" placeholder="Что ещё важно учесть Альберту…">${escapeHtml(meta.get(`notes:${section.id}`) || "")}</textarea>
                 </label>
               </section>
             `;
@@ -384,16 +374,31 @@ function render() {
 function renderQuestion(item) {
   const itemNotes = noteList(item.id);
   return `
-    <article class="question question-compact ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
-      <label class="check">
+    <article class="question program-request ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
+      <label class="check program-check" title="Согласовать запрос">
         <input type="checkbox" ${item.checked ? "checked" : ""} data-check="${escapeHtml(item.id)}">
         <span></span>
       </label>
       <div class="question-body">
         ${item.custom ? `<div class="question-meta">Добавил ${escapeHtml(item.createdByName || "участник")}</div>` : ""}
-        <h4>${escapeHtml(item.text)}</h4>
+        <h3>${escapeHtml(item.title || "Дополнительный запрос")}</h3>
+        <p class="program-request-text">${escapeHtml(item.text)}</p>
+        ${
+          item.context || item.outcome
+            ? `<div class="program-request-details">
+                <div><strong>Контекст</strong><p>${escapeHtml(item.context || "")}</p></div>
+                <div><strong>Результат программы</strong><p>${escapeHtml(item.outcome || "")}</p></div>
+              </div>`
+            : ""
+        }
+        ${
+          item.quote
+            ? `<blockquote class="request-quote">«${escapeHtml(item.quote)}» <small>${escapeHtml(item.quoteAuthor || "")}</small></blockquote>
+               <div class="request-source">${escapeHtml(item.why || "")}</div>`
+            : ""
+        }
         <details class="team-notes team-notes-collapsed" ${itemNotes.length ? "open" : ""}>
-          <summary>${itemNotes.length ? `${itemNotes.length} заметок` : "Добавить заметку"}</summary>
+          <summary>${itemNotes.length ? `${itemNotes.length} комментариев` : "Добавить комментарий"}</summary>
           ${
             itemNotes.length
               ? itemNotes
@@ -414,8 +419,8 @@ function renderQuestion(item) {
               : ""
           }
           <form class="note-form" data-note-form="${escapeHtml(item.id)}">
-            <input name="note" maxlength="500" placeholder="Заметка от ${escapeHtml(participant.name)}…" required>
-            <button aria-label="Отправить заметку">↑</button>
+            <input name="note" maxlength="500" placeholder="Комментарий от ${escapeHtml(participant.name)}…" required>
+            <button aria-label="Отправить комментарий">↑</button>
           </form>
         </details>
       </div>
@@ -538,21 +543,12 @@ function closeDialog() {
 function showNewRequest() {
   openDialog(
     `
-      <div class="dialog-kicker">Новый пункт на общей доске</div>
-      <h2>Что ещё спросить?</h2>
+      <div class="dialog-kicker">Дополнение к брифу</div>
+      <h2>Новый запрос к программе</h2>
       <form id="request-form" class="request-form">
-        <label>Тема
-          <select name="section">
-            ${sections
-              .map(
-                (section) =>
-                  `<option value="${section.id}" ${section.id === activeSection ? "selected" : ""}>${section.short}</option>`,
-              )
-              .join("")}
-          </select>
-        </label>
+        <input type="hidden" name="section" value="${sections[0].id}">
         <label>Запрос
-          <textarea name="question" maxlength="280" placeholder="Например: как понять, что практика прижилась?" required autofocus></textarea>
+          <textarea name="question" maxlength="500" placeholder="Что Альберт должен помочь команде понять или изменить?" required autofocus></textarea>
         </label>
         <button class="button button-accent">Добавить для всех</button>
       </form>
@@ -567,6 +563,7 @@ function showNewRequest() {
     items.set(id, {
       id,
       sectionId,
+      title: "Дополнительный запрос",
       text: form.elements.question.value.trim(),
       why: "",
       checked: false,
@@ -585,21 +582,21 @@ function showNewRequest() {
 
 function showBrief() {
   openDialog(`
-    <div class="dialog-kicker">Можно прочитать вслух</div>
-    <h2>Вводная на 60 секунд</h2>
+    <div class="dialog-kicker">Контекст для подготовки программы</div>
+    <h2>Коротко о команде</h2>
     <ol class="brief-list">${openingScript.map((line) => `<li>${line}</li>`).join("")}</ol>
-    <button class="button button-accent" data-copy-brief>Скопировать вводную</button>
+    <button class="button button-accent" data-copy-brief>Скопировать контекст</button>
   `);
   document.querySelector("[data-copy-brief]").addEventListener("click", async () => {
     await navigator.clipboard.writeText(openingScript.join("\n\n"));
-    toast("Вводная скопирована");
+    toast("Контекст скопирован");
   });
 }
 
 function showSources() {
   openDialog(`
     <div class="dialog-kicker">Проверено по открытым материалам</div>
-    <h2>Почему эти вопросы подходят Альберту</h2>
+    <h2>Материалы Альберта по нашим запросам</h2>
     <div class="source-list">
       ${sources
         .map(

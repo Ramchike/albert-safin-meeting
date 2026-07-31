@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { keyRequests, openingScript, sections, sources } from "../src/content.js";
+import { openingScript, sections, sources } from "../src/content.js";
 
 describe("содержание шпаргалки", () => {
   it("у каждого вопроса есть уникальный идентификатор и основание", () => {
@@ -9,7 +9,7 @@ describe("содержание шпаргалки", () => {
   });
 
   it("цитаты отделены от пересказа и имеют автора и время", () => {
-    expect(sections.map((section) => section.id)).toEqual(["certainty", "uncertainty"]);
+    expect(sections.map((section) => section.id)).toEqual(["program"]);
     expect(
       sections.flatMap((section) => section.quotes).every((quote) => quote.text && quote.author && quote.time),
     ).toBe(true);
@@ -17,7 +17,7 @@ describe("содержание шпаргалки", () => {
 
   it("есть готовая вводная и проверяемые источники", () => {
     expect(openingScript.length).toBeGreaterThanOrEqual(4);
-    expect(keyRequests).toHaveLength(4);
+    expect(sections[0].questions).toHaveLength(5);
     expect(sources.every((source) => source.url.startsWith("https://"))).toBe(true);
   });
 });

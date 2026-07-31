@@ -3,12 +3,12 @@ import { expect, test } from "@playwright/test";
 test("основной сценарий встречи и быстрый новый запрос работают", async ({ page }, testInfo) => {
   const room = `main-${testInfo.project.name}-${Date.now()}`;
   await page.goto(`/?test-room=${room}`);
-  await expect(page.getByRole("heading", { name: /Встреча с Альбертом Сафиным/ })).toBeVisible({
+  await expect(page.getByRole("heading", { name: /Запросы к программе Альберта Сафина/ })).toBeVisible({
     timeout: 8_000,
   });
-  await expect(page.getByRole("heading", { name: "Зона определённости" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Зона неопределённости" })).toBeVisible();
-  await expect(page.locator(".question")).toHaveCount(31);
+  await expect(page.getByRole("heading", { name: "Пять направлений программы" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Коротко о команде" })).toBeVisible();
+  await expect(page.locator(".question")).toHaveCount(5);
 
   const firstQuestion = page.locator(".question").first();
   await firstQuestion.locator(".check").click();
@@ -42,14 +42,12 @@ test("мобильная кнопка нового запроса закрепл
   expect(geometry.bottomGap).toBeLessThan(30);
 });
 
-test("вводная и источники открываются", async ({ page }, testInfo) => {
+test("контекст команды и источники доступны", async ({ page }, testInfo) => {
   await page.goto(`/?test-room=dialog-${testInfo.project.name}-${Date.now()}`);
-  await page.getByRole("button", { name: "Вводная", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Вводная на 60 секунд" })).toBeVisible();
-  await page.getByRole("button", { name: "Закрыть" }).click();
+  await expect(page.getByText(/За две недели до вашего выступления/)).toBeVisible({ timeout: 8_000 });
 
   await page.getByRole("button", { name: "Источники" }).click();
-  await expect(page.getByRole("heading", { name: "Почему эти вопросы подходят Альберту" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Материалы Альберта по нашим запросам" })).toBeVisible();
 });
 
 test("два изолированных посетителя видят отметки, заметки и указатели", async ({ browser }, testInfo) => {
@@ -66,7 +64,7 @@ test("два изолированных посетителя видят отме
     ]);
     await expect(first.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
     await expect(second.locator("#presence-count")).toContainText("2 участника", { timeout: 15_000 });
-    await first.waitForTimeout(1_500);
+    await first.waitForTimeout(3_500);
 
     await first.locator(".question").first().locator(".check").click();
     await expect(second.locator(".question").first()).toHaveClass(/checked/, { timeout: 8_000 });
