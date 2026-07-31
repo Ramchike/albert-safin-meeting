@@ -17,7 +17,7 @@ describe("содержание шпаргалки", () => {
 
   it("есть готовая вводная и проверяемые источники", () => {
     expect(openingScript.length).toBeGreaterThanOrEqual(4);
-    expect(sections[0].questions).toHaveLength(5);
+    expect(sections[0].questions).toHaveLength(7);
     expect(sources.every((source) => source.url.startsWith("https://"))).toBe(true);
   });
 });

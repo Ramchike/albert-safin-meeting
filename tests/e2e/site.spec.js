@@ -6,9 +6,9 @@ test("основной сценарий встречи и быстрый нов�
   await expect(page.getByRole("heading", { name: /Запросы к программе Альберта Сафина/ })).toBeVisible({
     timeout: 8_000,
   });
-  await expect(page.getByRole("heading", { name: "Пять направлений программы" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Семь направлений программы" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Коротко о команде" })).toBeVisible();
-  await expect(page.locator(".question")).toHaveCount(5);
+  await expect(page.locator(".question")).toHaveCount(7);
 
   const firstQuestion = page.locator(".question").first();
   await firstQuestion.locator(".check").click();
