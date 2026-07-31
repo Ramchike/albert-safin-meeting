@@ -1,77 +1,46 @@
 import * as Y from "yjs";
-import { WebrtcProvider } from "y-webrtc";
+import mqtt from "mqtt";
 import { openingScript, sections, sources } from "./content.js";
 import "./style.css";
 
-const params = new URLSearchParams(location.search);
-const room = params.get("room") || crypto.randomUUID().slice(0, 8);
-if (!params.get("room")) {
-  params.set("room", room);
-  history.replaceState(null, "", `${location.pathname}?${params}${location.hash}`);
-}
-
+const isLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
+const SHARED_ROOM =
+  (isLocal && new URLSearchParams(location.search).get("test-room")) ||
+  "albert-safin-team-meeting-v2";
+const STORAGE_KEY = `coach-state:${SHARED_ROOM}`;
 const palette = ["#F05D3D", "#4766E7", "#B159C7", "#278B70", "#CB7D13"];
+
 const participant = {
+  id: localStorage.getItem("coach-id") || crypto.randomUUID(),
   name: localStorage.getItem("coach-name") || `Участник ${Math.floor(Math.random() * 90 + 10)}`,
   color: localStorage.getItem("coach-color") || palette[Math.floor(Math.random() * palette.length)],
 };
+localStorage.setItem("coach-id", participant.id);
+localStorage.setItem("coach-color", participant.color);
 
 const doc = new Y.Doc();
 const items = doc.getMap("items");
+const notes = doc.getMap("notes");
 const meta = doc.getMap("meta");
 let provider;
-let realtime = false;
+let connected = false;
+let initialized = false;
+const people = new Map();
+const TOPIC_ROOT = `ramchike-sites/coach-guide-7f3a2d/${SHARED_ROOM}`;
+const STATE_TOPIC = `${TOPIC_ROOT}/state`;
+const UPDATE_TOPIC = `${TOPIC_ROOT}/updates`;
+const PRESENCE_TOPIC = `${TOPIC_ROOT}/presence/${participant.id}`;
+let heartbeatTimer;
 
 const defaults = sections.flatMap((section) =>
   section.questions.map((question) => ({
     ...question,
     sectionId: section.id,
     custom: false,
+    checked: false,
+    checkedBy: "",
   })),
 );
-
-function readSnapshot() {
-  const encoded = params.get("snapshot");
-  if (!encoded) return null;
-  try {
-    return JSON.parse(decodeURIComponent(escape(atob(encoded))));
-  } catch {
-    return null;
-  }
-}
-
-function initialState() {
-  const snapshot = readSnapshot();
-  const local = localStorage.getItem(`coach-state:${room}`);
-  if (snapshot?.items) return snapshot;
-  if (local) {
-    try {
-      return JSON.parse(local);
-    } catch {
-      // Fall through to defaults.
-    }
-  }
-  return {
-    items: defaults.map((item) => ({ ...item, checked: false, notes: "" })),
-    sessionNotes: "",
-  };
-}
-
-doc.transact(() => {
-  const state = initialState();
-  state.items.forEach((item) => {
-    if (!items.has(item.id)) items.set(item.id, item);
-  });
-  if (!meta.has("sessionNotes")) meta.set("sessionNotes", state.sessionNotes || "");
-});
-
-try {
-  provider = new WebrtcProvider(`safin-meeting-${room}`, doc);
-  provider.awareness.setLocalStateField("user", participant);
-  realtime = true;
-} catch (error) {
-  console.warn("Совместный режим недоступен, продолжаем локально.", error);
-}
 
 const app = document.querySelector("#app");
 let activeSection = sections[0].id;
@@ -91,21 +60,171 @@ function itemList() {
   return Array.from(items.values());
 }
 
+function noteList(itemId) {
+  return Array.from(notes.values())
+    .filter((note) => note.itemId === itemId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+function localState() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+  } catch {
+    return null;
+  }
+}
+
+function seedIfEmpty() {
+  if (initialized) return;
+  initialized = true;
+  const saved = localState();
+  doc.transact(() => {
+    if (items.size === 0) {
+      (saved?.items || defaults).forEach((item) => {
+        items.set(item.id, {
+          ...item,
+          notes: undefined,
+          checkedBy: item.checkedBy || "",
+        });
+      });
+    }
+    if (notes.size === 0) {
+      (saved?.notes || []).forEach((note) => notes.set(note.id, note));
+    }
+    Object.entries(saved?.meta || {}).forEach(([key, value]) => {
+      if (!meta.has(key)) meta.set(key, value);
+    });
+  });
+  render();
+}
+
 function persist() {
-  const state = {
-    items: itemList(),
-    sessionNotes: meta.get("sessionNotes") || "",
+  localStorage.setItem(
+    STORAGE_KEY,
+    JSON.stringify({
+      items: itemList(),
+      notes: Array.from(notes.values()),
+      meta: Object.fromEntries(meta.entries()),
+    }),
+  );
+}
+
+function connect() {
+  try {
+    provider = mqtt.connect("wss://broker.emqx.io:8084/mqtt", {
+      clientId: `coach_${participant.id.replaceAll("-", "").slice(0, 20)}_${Math.random().toString(16).slice(2, 8)}`,
+      clean: true,
+      connectTimeout: 8_000,
+      reconnectPeriod: 2_000,
+      keepalive: 15,
+      will: {
+        topic: PRESENCE_TOPIC,
+        payload: JSON.stringify({ ...participant, online: false, lastSeen: Date.now() }),
+        qos: 0,
+        retain: true,
+      },
+    });
+
+    provider.on("connect", () => {
+      connected = true;
+      provider.subscribe([STATE_TOPIC, UPDATE_TOPIC, `${TOPIC_ROOT}/presence/+`], { qos: 0 }, () => {
+        publishPresence();
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(publishPresence, 12_000);
+        setTimeout(seedIfEmpty, 900);
+      });
+      updatePresence();
+    });
+
+    provider.on("reconnect", () => {
+      connected = false;
+      updatePresence();
+    });
+
+    provider.on("offline", () => {
+      connected = false;
+      updatePresence();
+    });
+
+    provider.on("error", (error) => {
+      console.warn("Ошибка общей синхронизации.", error);
+      connected = false;
+      updatePresence();
+    });
+
+    provider.on("message", (topic, payload) => {
+      if (topic === STATE_TOPIC || topic === UPDATE_TOPIC) {
+        try {
+          Y.applyUpdate(doc, new Uint8Array(payload), "mqtt");
+          seedIfEmpty();
+        } catch (error) {
+          console.warn("Не удалось применить общее состояние.", error);
+        }
+        return;
+      }
+
+      if (topic.startsWith(`${TOPIC_ROOT}/presence/`)) {
+        try {
+          const person = JSON.parse(payload.toString());
+          if (person.online) people.set(person.id, person);
+          else people.delete(person.id);
+          prunePeople();
+          updatePresence();
+          renderCursors();
+        } catch {
+          // Ignore malformed messages on the public topic.
+        }
+      }
+    });
+  } catch (error) {
+    console.warn("Общая синхронизация недоступна, продолжаем локально.", error);
+    seedIfEmpty();
+  }
+  setTimeout(seedIfEmpty, 2500);
+}
+
+function publishState(update) {
+  if (!connected || !provider) return;
+  if (update) provider.publish(UPDATE_TOPIC, update, { qos: 0, retain: false });
+  provider.publish(STATE_TOPIC, Y.encodeStateAsUpdate(doc), { qos: 0, retain: true });
+}
+
+function publishPresence(cursor) {
+  if (!connected || !provider) return;
+  const current = {
+    ...participant,
+    online: true,
+    lastSeen: Date.now(),
+    cursor: cursor || people.get(participant.id)?.cursor || null,
   };
-  localStorage.setItem(`coach-state:${room}`, JSON.stringify(state));
+  people.set(participant.id, current);
+  provider.publish(PRESENCE_TOPIC, JSON.stringify(current), { qos: 0, retain: true });
+  updatePresence();
+}
+
+function prunePeople() {
+  const cutoff = Date.now() - 40_000;
+  people.forEach((person, id) => {
+    if (person.lastSeen < cutoff) people.delete(id);
+  });
 }
 
 function progress() {
   const all = itemList();
   const done = all.filter((item) => item.checked).length;
-  return { done, total: all.length, percent: all.length ? Math.round((done / all.length) * 100) : 0 };
+  return {
+    done,
+    total: all.length,
+    percent: all.length ? Math.round((done / all.length) * 100) : 0,
+  };
 }
 
 function render() {
+  if (!initialized) {
+    app.innerHTML = `<div class="loading-screen"><span></span><p>Подключаем общую доску…</p></div>`;
+    return;
+  }
+
   const current = sections.find((section) => section.id === activeSection) || sections[0];
   const allItems = itemList();
   const currentItems = allItems.filter(
@@ -114,7 +233,6 @@ function render() {
       (filter === "all" || (filter === "open" ? !item.checked : item.checked)),
   );
   const stats = progress();
-  const peers = realtime ? provider.awareness.getStates().size : 1;
 
   app.innerHTML = `
     <header class="topbar">
@@ -122,51 +240,68 @@ function render() {
         <span class="brand-mark">НГ</span>
         <span>Не потерять главное</span>
       </a>
-      <button class="presence" data-action="identity" title="Участники в этой комнате">
-        <span class="pulse"></span>
-        <span id="presence-count">${realtime ? `${peers} в комнате` : "локальный режим"}</span>
+      <button class="presence" data-action="identity" title="Кто сейчас на странице">
+        <span class="pulse ${connected ? "" : "offline"}"></span>
+        <span id="presence-count">${presenceText()}</span>
       </button>
-      <button class="button button-dark" data-action="share">Поделиться</button>
+      <button class="button button-dark" data-action="share">Скопировать ссылку</button>
     </header>
 
     <main id="top">
-      <section class="hero">
-        <div class="hero-kicker">Шпаргалка к встрече · комната ${escapeHtml(room)}</div>
-        <h1>Не получить ответы.<br><em>Научиться действовать.</em></h1>
-        <p class="hero-lead">
-          Вопросы к Альберту Сафину, собранные из ваших слов. Цитаты — дословные;
-          пересказы и выводы — явно помечены.
-        </p>
-        <div class="hero-grid">
-          <div class="progress-card">
-            <div class="progress-label"><span>Пройдено</span><strong>${stats.done}/${stats.total}</strong></div>
+      <section class="hero hero-compact">
+        <div class="hero-copy">
+          <div class="hero-kicker">Общая шпаргалка к встрече с Альбертом Сафиным</div>
+          <h1>Не потерять<br><em>главное.</em></h1>
+          <p class="hero-lead">
+            Цитаты — дословные. Пересказы — помечены. Все отметки и заметки видны команде.
+          </p>
+        </div>
+        <div class="hero-tools">
+          <div class="progress-card progress-compact">
+            <div class="progress-label"><span>Обсудили</span><strong>${stats.done}/${stats.total}</strong></div>
             <div class="progress-track"><span style="width:${stats.percent}%"></span></div>
-            <p>${stats.percent}% вопросов отмечено</p>
           </div>
-          <button class="brief-card" data-action="brief">
-            <span>Вводная на 60 секунд</span>
-            <strong>Открыть текст →</strong>
+          <button class="brief-card brief-compact" data-action="brief">
+            <span>Начать встречу</span>
+            <strong>Вводная на 60 секунд →</strong>
           </button>
         </div>
       </section>
 
-      <section class="workspace">
-        <aside class="rail">
-          <div class="rail-label">Маршрут разговора</div>
-          <nav>
-            ${sections
-              .map((section) => {
-                const sectionItems = allItems.filter((item) => item.sectionId === section.id);
-                const done = sectionItems.filter((item) => item.checked).length;
-                return `
-                  <button class="nav-item ${section.id === current.id ? "active" : ""}" data-section="${section.id}">
-                    <span>${section.number}</span>
-                    <div><strong>${section.short}</strong><small>${done}/${sectionItems.length}</small></div>
-                  </button>
-                `;
-              })
+      <section class="topic-bar" aria-label="Темы встречи">
+        <div class="topic-label">1. Выберите тему</div>
+        <div class="topic-tabs">
+          ${sections
+            .map((section) => {
+              const sectionItems = allItems.filter((item) => item.sectionId === section.id);
+              const done = sectionItems.filter((item) => item.checked).length;
+              return `
+                <button class="topic-tab ${section.id === current.id ? "active" : ""}" data-section="${section.id}">
+                  <span>${section.number}</span>
+                  <strong>${section.short}</strong>
+                  <small>${done}/${sectionItems.length}</small>
+                </button>
+              `;
+            })
+            .join("")}
+        </div>
+      </section>
+
+      <section class="workspace workspace-simple">
+        <aside class="rail rail-simple">
+          <div class="rail-label">2. Какие вопросы показать</div>
+          <div class="filters filters-vertical" role="group" aria-label="Какие вопросы показать">
+            ${[
+              ["all", "Все вопросы"],
+              ["open", "Осталось обсудить"],
+              ["done", "Уже обсудили"],
+            ]
+              .map(
+                ([value, label]) =>
+                  `<button class="${filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`,
+              )
               .join("")}
-          </nav>
+          </div>
           <div class="rail-actions">
             <button data-action="export">Скачать итог</button>
             <label class="import-label">Загрузить итог<input type="file" accept="application/json" data-action="import"></label>
@@ -196,87 +331,41 @@ function render() {
                 `,
               )
               .join("")}
-            <button data-action="quotes">${showAllQuotes ? "Свернуть цитаты" : `Ещё ${current.quotes.length - 1} цитаты`}</button>
+            <button data-action="quotes">${showAllQuotes ? "Свернуть цитаты" : `Показать ещё ${current.quotes.length - 1}`}</button>
           </div>
 
           <div class="questions-toolbar">
-            <h3>Что спросить</h3>
-            <div class="filters" role="group" aria-label="Фильтр вопросов">
-              ${[
-                ["all", "Все"],
-                ["open", "Открытые"],
-                ["done", "Отмеченные"],
-              ]
-                .map(
-                  ([value, label]) =>
-                    `<button class="${filter === value ? "active" : ""}" data-filter="${value}">${label}</button>`,
-                )
-                .join("")}
-            </div>
+            <h3>${filter === "all" ? "Все вопросы" : filter === "open" ? "Осталось обсудить" : "Уже обсудили"}</h3>
+            <span>${currentItems.length} шт.</span>
           </div>
 
           <div class="question-list">
             ${
               currentItems.length
-                ? currentItems
-                    .map(
-                      (item) => `
-                        <article class="question ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
-                          <label class="check">
-                            <input type="checkbox" ${item.checked ? "checked" : ""} data-check="${escapeHtml(item.id)}">
-                            <span></span>
-                          </label>
-                          <div class="question-body">
-                            <div class="question-meta">${item.custom ? "Добавлено командой" : "Вопрос к Альберту"}</div>
-                            <h4>${escapeHtml(item.text)}</h4>
-                            ${item.why ? `<p><strong>Зачем:</strong> ${escapeHtml(item.why)}</p>` : ""}
-                            <textarea data-notes="${escapeHtml(item.id)}" placeholder="Записать ответ или мысль…">${escapeHtml(item.notes || "")}</textarea>
-                          </div>
-                          ${item.custom ? `<button class="delete" data-delete="${escapeHtml(item.id)}" aria-label="Удалить вопрос">×</button>` : ""}
-                        </article>
-                      `,
-                    )
-                    .join("")
-                : `<div class="empty">Здесь пока нет вопросов с таким состоянием.</div>`
+                ? currentItems.map(renderQuestion).join("")
+                : `<div class="empty">Здесь пока ничего нет.</div>`
             }
           </div>
 
-          <form class="add-form" id="add-form">
-            <label for="new-question">Добавить свой вопрос в эту тему</label>
-            <div>
-              <input id="new-question" name="question" maxlength="280" placeholder="Например: как понять, что…" required>
-              <button class="button button-accent">Добавить</button>
-            </div>
-          </form>
-
           <div class="session-notes">
             <label for="session-notes">Общий вывод по теме</label>
-            <textarea id="session-notes" placeholder="Что решили сделать после встречи…">${escapeHtml(meta.get(`notes:${current.id}`) || "")}</textarea>
+            <textarea id="session-notes" placeholder="Что команда решила сделать после встречи…">${escapeHtml(meta.get(`notes:${current.id}`) || "")}</textarea>
           </div>
         </section>
       </section>
-
-      <section class="method-note">
-        <div>
-          <span class="eyebrow">Как собрана шпаргалка</span>
-          <h2>От слов команды — к наблюдаемому действию</h2>
-        </div>
-        <div class="method-grid">
-          <p><strong>1. Не додумывать.</strong> Цитаты сохранены отдельно от пересказа. Субъективные оценки команды названы гипотезами.</p>
-          <p><strong>2. Уточнить результат.</strong> Каждый широкий запрос превращён в вопрос про ситуацию, поведение и признак «стало лучше».</p>
-          <p><strong>3. Унести практику.</strong> Финал встречи — две практики на 30 дней и дата разбора, а не список вдохновляющих идей.</p>
-        </div>
-      </section>
     </main>
 
-    <footer class="footer">
-      <p>Собрано для живого разговора. Не психологическое заключение и не дословный протокол встречи.</p>
-      <button data-action="reset">Сбросить мои отметки</button>
+    <button class="new-request-fab" data-action="new-request" aria-label="Добавить новый запрос">
+      <span>+</span><strong>Новый запрос</strong>
+    </button>
+
+    <footer class="footer footer-simple">
+      <p>Одна общая доска для всех посетителей этой страницы.</p>
+      <p>Публичный прототип: не записывайте секретные сведения.</p>
     </footer>
 
     <div id="cursor-layer" aria-hidden="true"></div>
     <div id="toast" role="status" aria-live="polite"></div>
-
     <dialog id="dialog">
       <button class="dialog-close" data-action="close" aria-label="Закрыть">×</button>
       <div id="dialog-content"></div>
@@ -287,11 +376,87 @@ function render() {
   renderCursors();
 }
 
+function renderQuestion(item) {
+  const itemNotes = noteList(item.id);
+  return `
+    <article class="question ${item.checked ? "checked" : ""}" data-id="${escapeHtml(item.id)}">
+      <label class="check">
+        <input type="checkbox" ${item.checked ? "checked" : ""} data-check="${escapeHtml(item.id)}">
+        <span></span>
+      </label>
+      <div class="question-body">
+        <div class="question-meta">${item.custom ? `Запрос от ${escapeHtml(item.createdByName || "команды")}` : "Вопрос к Альберту"}</div>
+        <h4>${escapeHtml(item.text)}</h4>
+        ${item.why ? `<p><strong>Зачем:</strong> ${escapeHtml(item.why)}</p>` : ""}
+        ${item.checkedBy ? `<div class="checked-by">Отметил: ${escapeHtml(item.checkedBy)}</div>` : ""}
+
+        <div class="team-notes">
+          ${
+            itemNotes.length
+              ? itemNotes
+                  .map(
+                    (note) => `
+                      <div class="team-note" style="--note-color:${escapeHtml(note.color)}">
+                        <div><strong>${escapeHtml(note.author)}</strong><time>${formatTime(note.createdAt)}</time></div>
+                        <p>${escapeHtml(note.text)}</p>
+                        ${
+                          note.authorId === participant.id
+                            ? `<button data-delete-note="${escapeHtml(note.id)}" aria-label="Удалить заметку">×</button>`
+                            : ""
+                        }
+                      </div>
+                    `,
+                  )
+                  .join("")
+              : `<span class="no-notes">Пока нет заметок команды</span>`
+          }
+          <form class="note-form" data-note-form="${escapeHtml(item.id)}">
+            <input name="note" maxlength="500" placeholder="Добавить заметку от ${escapeHtml(participant.name)}…" required>
+            <button aria-label="Отправить заметку">↑</button>
+          </form>
+        </div>
+      </div>
+      ${
+        item.custom && item.createdBy === participant.id
+          ? `<button class="delete" data-delete="${escapeHtml(item.id)}" aria-label="Удалить запрос">×</button>`
+          : ""
+      }
+    </article>
+  `;
+}
+
+function formatTime(value) {
+  try {
+    return new Intl.DateTimeFormat("ru", {
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return "";
+  }
+}
+
+function presenceText() {
+  if (!provider) return "локальный режим";
+  prunePeople();
+  const count = people.size;
+  if (!connected) return "переподключаемся…";
+  return `${count} ${count === 1 ? "участник" : count < 5 ? "участника" : "участников"}`;
+}
+
+function updatePresence() {
+  const node = document.querySelector("#presence-count");
+  if (node) node.textContent = presenceText();
+  const pulse = document.querySelector(".pulse");
+  if (pulse) pulse.classList.toggle("offline", !connected);
+}
+
 function updateItem(id, patch) {
   const item = items.get(id);
   if (!item) return;
   items.set(id, { ...item, ...patch });
-  persist();
 }
 
 function bindEvents() {
@@ -300,7 +465,7 @@ function bindEvents() {
       activeSection = button.dataset.section;
       showAllQuotes = false;
       render();
-      scrollTo({ top: document.querySelector(".workspace").offsetTop - 70, behavior: "smooth" });
+      document.querySelector(".workspace")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   });
   document.querySelectorAll("[data-filter]").forEach((button) => {
@@ -310,69 +475,124 @@ function bindEvents() {
     });
   });
   document.querySelectorAll("[data-check]").forEach((input) => {
-    input.addEventListener("change", () => updateItem(input.dataset.check, { checked: input.checked }));
+    input.addEventListener("change", () =>
+      updateItem(input.dataset.check, {
+        checked: input.checked,
+        checkedBy: input.checked ? participant.name : "",
+      }),
+    );
   });
-  document.querySelectorAll("[data-notes]").forEach((textarea) => {
-    textarea.addEventListener("change", () => updateItem(textarea.dataset.notes, { notes: textarea.value }));
+  document.querySelectorAll("[data-note-form]").forEach((form) => {
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const text = form.elements.note.value.trim();
+      if (!text) return;
+      const id = crypto.randomUUID();
+      notes.set(id, {
+        id,
+        itemId: form.dataset.noteForm,
+        text,
+        author: participant.name,
+        authorId: participant.id,
+        color: participant.color,
+        createdAt: new Date().toISOString(),
+      });
+      form.reset();
+    });
+  });
+  document.querySelectorAll("[data-delete-note]").forEach((button) => {
+    button.addEventListener("click", () => notes.delete(button.dataset.deleteNote));
   });
   document.querySelectorAll("[data-delete]").forEach((button) => {
     button.addEventListener("click", () => {
-      items.delete(button.dataset.delete);
-      persist();
+      const id = button.dataset.delete;
+      doc.transact(() => {
+        items.delete(id);
+        noteList(id).forEach((note) => notes.delete(note.id));
+      });
     });
   });
-
-  document.querySelector("#add-form")?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const input = event.currentTarget.elements.question;
-    const id = `custom-${crypto.randomUUID()}`;
-    items.set(id, {
-      id,
-      sectionId: activeSection,
-      text: input.value.trim(),
-      why: "",
-      checked: false,
-      notes: "",
-      custom: true,
-    });
-    input.value = "";
-    persist();
-  });
-
   document.querySelector("#session-notes")?.addEventListener("change", (event) => {
     meta.set(`notes:${activeSection}`, event.target.value);
-    persist();
   });
   document.querySelector('[data-action="quotes"]')?.addEventListener("click", () => {
     showAllQuotes = !showAllQuotes;
     render();
   });
+  document.querySelector('[data-action="new-request"]')?.addEventListener("click", showNewRequest);
   document.querySelector('[data-action="brief"]')?.addEventListener("click", showBrief);
   document.querySelector('[data-action="sources"]')?.addEventListener("click", showSources);
   document.querySelector('[data-action="share"]')?.addEventListener("click", share);
   document.querySelector('[data-action="identity"]')?.addEventListener("click", showIdentity);
   document.querySelector('[data-action="export"]')?.addEventListener("click", exportState);
   document.querySelector('[data-action="import"]')?.addEventListener("change", importState);
-  document.querySelector('[data-action="reset"]')?.addEventListener("click", resetState);
   document.querySelector('[data-action="close"]')?.addEventListener("click", closeDialog);
 }
 
-function openDialog(content) {
+function openDialog(content, className = "") {
+  const dialog = document.querySelector("#dialog");
+  dialog.className = className;
   document.querySelector("#dialog-content").innerHTML = content;
-  document.querySelector("#dialog").showModal();
+  dialog.showModal();
 }
 
 function closeDialog() {
   document.querySelector("#dialog")?.close();
 }
 
+function showNewRequest() {
+  openDialog(
+    `
+      <div class="dialog-kicker">Новый пункт на общей доске</div>
+      <h2>Что ещё спросить?</h2>
+      <form id="request-form" class="request-form">
+        <label>Тема
+          <select name="section">
+            ${sections
+              .map(
+                (section) =>
+                  `<option value="${section.id}" ${section.id === activeSection ? "selected" : ""}>${section.short}</option>`,
+              )
+              .join("")}
+          </select>
+        </label>
+        <label>Запрос
+          <textarea name="question" maxlength="280" placeholder="Например: как понять, что практика прижилась?" required autofocus></textarea>
+        </label>
+        <button class="button button-accent">Добавить для всех</button>
+      </form>
+    `,
+    "request-dialog",
+  );
+  const form = document.querySelector("#request-form");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const id = `custom-${crypto.randomUUID()}`;
+    const sectionId = form.elements.section.value;
+    items.set(id, {
+      id,
+      sectionId,
+      text: form.elements.question.value.trim(),
+      why: "",
+      checked: false,
+      checkedBy: "",
+      custom: true,
+      createdBy: participant.id,
+      createdByName: participant.name,
+    });
+    activeSection = sectionId;
+    filter = "all";
+    closeDialog();
+    toast("Запрос добавлен для всей команды");
+  });
+  setTimeout(() => form.elements.question.focus(), 50);
+}
+
 function showBrief() {
   openDialog(`
     <div class="dialog-kicker">Можно прочитать вслух</div>
     <h2>Вводная на 60 секунд</h2>
-    <ol class="brief-list">
-      ${openingScript.map((line) => `<li>${line}</li>`).join("")}
-    </ol>
+    <ol class="brief-list">${openingScript.map((line) => `<li>${line}</li>`).join("")}</ol>
     <button class="button button-accent" data-copy-brief>Скопировать вводную</button>
   `);
   document.querySelector("[data-copy-brief]").addEventListener("click", async () => {
@@ -385,15 +605,12 @@ function showSources() {
   openDialog(`
     <div class="dialog-kicker">Проверено по открытым материалам</div>
     <h2>Почему эти вопросы подходят Альберту</h2>
-    <p class="dialog-lead">В его материалах есть именно ваши темы: переносимость неопределённости, наблюдаемая точка Б, граница между развитием людей и системной проблемой, стратегическое мышление.</p>
     <div class="source-list">
       ${sources
         .map(
           (source) => `
             <a href="${source.url}" target="_blank" rel="noreferrer">
-              <strong>${source.title}</strong>
-              <span>${source.note}</span>
-              <i>↗</i>
+              <strong>${source.title}</strong><span>${source.note}</span><i>↗</i>
             </a>
           `,
         )
@@ -404,9 +621,8 @@ function showSources() {
 
 function showIdentity() {
   openDialog(`
-    <div class="dialog-kicker">Совместная комната</div>
+    <div class="dialog-kicker">Ваши заметки и указатель</div>
     <h2>Как вас подписать?</h2>
-    <p class="dialog-lead">Это имя увидят рядом с вашим указателем мыши только участники комнаты.</p>
     <form id="identity-form" class="identity-form">
       <input name="name" maxlength="40" value="${escapeHtml(participant.name)}" required>
       <button class="button button-accent">Сохранить</button>
@@ -416,32 +632,25 @@ function showIdentity() {
     event.preventDefault();
     participant.name = event.currentTarget.elements.name.value.trim();
     localStorage.setItem("coach-name", participant.name);
-    provider?.awareness.setLocalStateField("user", participant);
+    publishPresence();
     closeDialog();
     toast("Имя сохранено");
   });
 }
 
 async function share() {
-  const state = {
-    items: itemList(),
-    sessionNotes: meta.get("sessionNotes") || "",
-  };
-  const snapshot = btoa(unescape(encodeURIComponent(JSON.stringify(state))));
-  const url = new URL(location.href);
-  url.searchParams.set("room", room);
-  url.searchParams.set("snapshot", snapshot);
-  await navigator.clipboard.writeText(url.toString());
-  toast("Ссылка на общую комнату скопирована");
+  const url = `${location.origin}${location.pathname}`;
+  await navigator.clipboard.writeText(url);
+  toast("Короткая ссылка скопирована");
 }
 
 function exportState() {
   const payload = JSON.stringify(
     {
       exportedAt: new Date().toISOString(),
-      room,
       items: itemList(),
-      notes: Object.fromEntries(meta.entries()),
+      notes: Array.from(notes.values()),
+      meta: Object.fromEntries(meta.entries()),
     },
     null,
     2,
@@ -460,24 +669,13 @@ async function importState(event) {
     const payload = JSON.parse(await file.text());
     doc.transact(() => {
       payload.items?.forEach((item) => items.set(item.id, item));
-      Object.entries(payload.notes || {}).forEach(([key, value]) => meta.set(key, value));
+      payload.notes?.forEach((note) => notes.set(note.id, note));
+      Object.entries(payload.meta || {}).forEach(([key, value]) => meta.set(key, value));
     });
-    persist();
-    toast("Итог загружен");
+    toast("Итог загружен для всей команды");
   } catch {
     toast("Не удалось прочитать файл");
   }
-}
-
-function resetState() {
-  if (!confirm("Снять все отметки и удалить заметки в этой комнате?")) return;
-  doc.transact(() => {
-    Array.from(items.keys()).forEach((id) => items.delete(id));
-    defaults.forEach((item) => items.set(item.id, { ...item, checked: false, notes: "" }));
-    Array.from(meta.keys()).forEach((key) => meta.delete(key));
-  });
-  persist();
-  toast("Отметки сброшены");
 }
 
 function toast(message) {
@@ -490,14 +688,14 @@ function toast(message) {
 function renderCursors() {
   const layer = document.querySelector("#cursor-layer");
   if (!layer || !provider) return;
-  const ownClient = doc.clientID;
-  layer.innerHTML = Array.from(provider.awareness.getStates().entries())
-    .filter(([clientId, state]) => clientId !== ownClient && state.cursor && state.user)
+  prunePeople();
+  layer.innerHTML = Array.from(people.values())
+    .filter((person) => person.id !== participant.id && person.cursor)
     .map(
-      ([clientId, state]) => `
-        <div class="remote-cursor" data-client="${clientId}" style="transform:translate(${state.cursor.x}px,${state.cursor.y}px);--cursor:${state.user.color}">
+      (person) => `
+        <div class="remote-cursor" data-client="${escapeHtml(person.id)}" style="transform:translate(${person.cursor.x}px,${person.cursor.y}px);--cursor:${person.color}">
           <svg viewBox="0 0 24 24"><path d="M4 2l15 9-7 2-3 7L4 2z"/></svg>
-          <span>${escapeHtml(state.user.name)}</span>
+          <span>${escapeHtml(person.name)}</span>
         </div>
       `,
     )
@@ -506,9 +704,9 @@ function renderCursors() {
 
 let cursorFrame;
 window.addEventListener("pointermove", (event) => {
-  if (!provider || cursorFrame) return;
+  if (!connected || cursorFrame) return;
   cursorFrame = requestAnimationFrame(() => {
-    provider.awareness.setLocalStateField("cursor", { x: event.clientX, y: event.clientY });
+    publishPresence({ x: event.clientX, y: event.clientY });
     cursorFrame = null;
   });
 });
@@ -517,13 +715,23 @@ items.observe(() => {
   persist();
   render();
 });
-meta.observe(() => {
+notes.observe(() => {
   persist();
+  render();
 });
-provider?.awareness.on("change", () => {
-  const count = document.querySelector("#presence-count");
-  if (count) count.textContent = `${provider.awareness.getStates().size} в комнате`;
-  renderCursors();
+meta.observe(() => persist());
+doc.on("update", (update, origin) => {
+  if (origin !== "mqtt") publishState(update);
+});
+
+window.addEventListener("beforeunload", () => {
+  if (!provider) return;
+  provider.publish(
+    PRESENCE_TOPIC,
+    JSON.stringify({ ...participant, online: false, lastSeen: Date.now() }),
+    { qos: 0, retain: true },
+  );
 });
 
 render();
+connect();
